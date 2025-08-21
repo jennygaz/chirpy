@@ -1,138 +1,63 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
+	"chirpy/internal/database"
+	"database/sql"
 	"log"
 	"net/http"
-	"strings"
+	"os"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
-}
-
-func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		cfg.fileserverHits.Add(1)
-		next.ServeHTTP(w, req)
-	})
-}
-
-func replaceBadWords(s string) string {
-	wordList := []string{"kerfuffle", "sharbert", "fornax"}
-	tokens := strings.Split(s, " ")
-	for idx, token := range tokens {
-		for _, word := range wordList {
-			if word == strings.ToLower(token) {
-				tokens[idx] = "****"
-			}
-		}
-	}
-	result := strings.Join(tokens, " ")
-	return result
-}
-
-func respondWithError(w http.ResponseWriter, code int, msg string) {
-	type errorChirp struct {
-		Error string `json:"error"`
-	}
-	errValue := errorChirp{
-		Error: msg,
-	}
-	dat, err := json.Marshal(errValue)
-	if err != nil {
-		log.Printf("Error decoding parameters: %s", err)
-		w.WriteHeader(500)
-		return
-	}
-	w.Header().Add("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	w.Write(dat)
-}
-
-func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) {
-	type cleanedSuccess struct {
-		CleanedBody string `json:"cleaned_body"`
-	}
-	resp := cleanedSuccess{
-		CleanedBody: payload.(string),
-	}
-
-	dat, err := json.Marshal(resp)
-	if err != nil {
-		log.Printf("Error marshalling JSON: %s", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-	w.Header().Add("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	w.Write(dat)
-}
-
-func validationHandler(w http.ResponseWriter, req *http.Request) {
-	chirpLength := 140
-	type parameters struct {
-		Body string `json:"body"`
-	}
-
-	decoder := json.NewDecoder(req.Body)
-	params := parameters{}
-	err := decoder.Decode(&params)
-	if err != nil {
-		log.Printf("Error decoding parameters: %s", err)
-		w.WriteHeader(http.StatusInternalServerError)
-		return
-	}
-
-	if len(params.Body) > chirpLength {
-		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
-		return
-	}
-
-	result := replaceBadWords(params.Body)
-	respondWithJSON(w, http.StatusOK, result)
+	db             *database.Queries
+	platform       string
 }
 
 func main() {
-	rootPath := "."
-	port := "8080"
-	apiCfg := apiConfig{}
+	const filepathRoot = "."
+	const port = "8080"
+
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	if dbURL == "" {
+		log.Fatal("DB_URL must be set")
+	}
+	platform := os.Getenv("PLATFORM")
+	if platform == "" {
+		log.Fatal("PLATFORM must be set")
+	}
+
+	dbConn, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatalf("Error opening database: %s", err)
+	}
+	dbQueries := database.New(dbConn)
+
+	apiCfg := apiConfig{
+		fileserverHits: atomic.Int32{},
+		db:             dbQueries,
+		platform:       platform,
+	}
+
 	serveMux := http.NewServeMux()
 	serveMux.Handle("/app/", http.StripPrefix("/app",
-		apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(rootPath)))))
-	serveMux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
-	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
-	serveMux.HandleFunc("GET /api/healthz", healthzHandler)
-	serveMux.HandleFunc("POST /api/validate_chirp", validationHandler)
+		apiCfg.middlewareMetricsInc(http.FileServer(http.Dir(filepathRoot)))))
+
+	serveMux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
+	serveMux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
+	serveMux.HandleFunc("GET /api/healthz", handlerReadiness)
+	serveMux.HandleFunc("POST /api/users", apiCfg.handlerUsersCreate)
+	serveMux.HandleFunc("POST /api/validate_chirp", handlerChirpsValidate)
 	server := http.Server{
 		Handler: serveMux,
 		Addr:    ":" + port,
 	}
+	log.Printf("Serving on port: %s\n", port)
 	server.ListenAndServe()
 
-}
-
-func healthzHandler(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(http.StatusText(http.StatusOK)))
-}
-
-func (cfg *apiConfig) hitsHandler(w http.ResponseWriter, req *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	content := fmt.Sprintf(`<html>
-  <body>
-    <h1>Welcome, Chirpy Admin</h1>
-    <p>Chirpy has been visited %d times!</p>
-  </body>
-</html>`, cfg.fileserverHits.Load())
-	w.Write([]byte(content))
-}
-
-func (cfg *apiConfig) resetHandler(w http.ResponseWriter, req *http.Request) {
-	cfg.fileserverHits.Store(0)
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("Hits reset to 0"))
 }
