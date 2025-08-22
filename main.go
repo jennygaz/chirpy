@@ -52,7 +52,9 @@ func main() {
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 	serveMux.HandleFunc("GET /api/healthz", handlerReadiness)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handlerUsersCreate)
-	serveMux.HandleFunc("POST /api/validate_chirp", handlerChirpsValidate)
+	serveMux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
+	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirpByID)
+	serveMux.HandleFunc("POST /api/chirps", apiCfg.handlerChirps)
 	server := http.Server{
 		Handler: serveMux,
 		Addr:    ":" + port,
