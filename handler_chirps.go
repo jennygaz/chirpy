@@ -1,6 +1,7 @@
 package main
 
 import (
+	"chirpy/internal/auth"
 	"chirpy/internal/database"
 	"encoding/json"
 	"fmt"
@@ -12,8 +13,7 @@ import (
 )
 
 type parameters struct {
-	Body   string    `json:"body"`
-	UserID uuid.UUID `json:"user_id"`
+	Body string `json:"body"`
 }
 
 type ChirpJSON struct {
@@ -25,9 +25,20 @@ type ChirpJSON struct {
 }
 
 func (cfg *apiConfig) handlerChirps(w http.ResponseWriter, r *http.Request) {
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "couldn't find JWT", err)
+		return
+	}
+	userID, err := auth.ValidateJWT(token, cfg.jwt)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, "couldn't find JWT", err)
+		return
+	}
+
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't decode parameters", err)
 		return
@@ -41,7 +52,7 @@ func (cfg *apiConfig) handlerChirps(w http.ResponseWriter, r *http.Request) {
 
 	record, err := cfg.db.CreateChirp(r.Context(), database.CreateChirpParams{
 		Body:   params.Body,
-		UserID: params.UserID,
+		UserID: userID,
 	})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't insert chirp", err)
@@ -115,7 +126,7 @@ func transform[T any, U any](source []T, f func(T) U) []U {
 func validateChirp(params parameters) (parameters, error) {
 	const maxChirpLength = 140
 	if len(params.Body) > maxChirpLength {
-		return parameters{}, fmt.Errorf("Chirp is too long")
+		return parameters{}, fmt.Errorf("chirp is too long")
 	}
 
 	badWords := map[string]struct{}{
